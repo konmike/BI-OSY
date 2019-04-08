@@ -33,27 +33,49 @@ using namespace std;
 
 class CWeldingCompany {
 public:
-    static void SeqSolve(APriceList priceList,
-                         COrder &order);
+    static void SeqSolve(APriceList priceList, COrder &order);
 
     void AddProducer(AProducer prod);
 
     void AddCustomer(ACustomer cust);
 
-    void AddPriceList(AProducer prod,
-                      APriceList priceList);
+    void AddPriceList(AProducer prod, APriceList priceList);
 
     void Start(unsigned thrCount);
 
     void Stop(void);
 };
 
+void CWeldingCompany::SeqSolve(APriceList priceList, COrder &order) {
+
+}
+
+void CWeldingCompany::AddProducer(AProducer prod) {
+
+}
+
+void CWeldingCompany::AddCustomer(ACustomer cust) {
+
+}
+
+void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
+
+}
+
+void CWeldingCompany::Start(unsigned thrCount) {
+
+}
+
+void CWeldingCompany::Stop(void) {
+
+}
+
 // TODO: CWeldingCompany implementation goes here
 
 //-------------------------------------------------------------------------------------------------
 #ifndef __PROGTEST__
 
-int main(void) {
+int main() {
     using namespace std::placeholders;
     CWeldingCompany test;
 
