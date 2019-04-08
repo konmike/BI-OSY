@@ -75,7 +75,7 @@ void CWeldingCompany::Stop(void) {
 //-------------------------------------------------------------------------------------------------
 #ifndef __PROGTEST__
 
-int main() {
+int main(void) {
     using namespace std::placeholders;
     CWeldingCompany test;
 
