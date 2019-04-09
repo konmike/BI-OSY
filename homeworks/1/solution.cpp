@@ -31,48 +31,89 @@
 using namespace std;
 #endif /* __PROGTEST__ */
 
+// --------------------------------------------------------------------------------------
+
+// Combined priceList by materialId from multiple producers.
 class CombinedPriceList {
 public:
-    CombinedPriceList() = default;
-
-    set<AProducer> producers;
     APriceList priceList;
+    set<AProducer> producers;
+    unsigned materialId;
 
-    void Add(const AProducer &producer, const APriceList &_priceList) {
-        // If producer haven't already added products to this priceList.
-        if (producers.find(producer) != producers.end()) {
-            for (auto &item : _priceList->m_List) {
-                // If there is a duplicity in a product (by width and height).
-                for (auto &addedItem : priceList->m_List) {
-                    if ((addedItem.m_H == item.m_H && addedItem.m_W == item.m_W) ||
-                        (addedItem.m_H == item.m_W && addedItem.m_W == item.m_H)) {
-                        // What is the lower cost?
-                        if (item.m_Cost < addedItem.m_Cost) {
-                            addedItem.m_Cost = item.m_Cost;
-                        }
-                    } // Different product.
-                    else {
-                        priceList->Add(item);
+    explicit CombinedPriceList(unsigned _materialId) : priceList(make_shared<CPriceList>(_materialId)),
+                                                       materialId(_materialId) {}
+
+    void Add(const AProducer &producer, const APriceList &_priceList);
+
+    bool ContainsProducer(const AProducer &producer);
+};
+
+void CombinedPriceList::Add(const AProducer &producer, const APriceList &_priceList) {
+#ifdef MY_DEBUG
+    cout << "Add " << _priceList << " to priced list " << this << "." << endl;
+#endif
+
+    // If producer haven't already added products to this priceList.
+    if (!ContainsProducer(producer)) {
+        producers.insert(producer);
+
+        for (auto &newItem : _priceList->m_List) {
+            // If there is a duplicity in a product (by width and height).
+            for (auto &item : priceList->m_List) {
+                // The product has the same dimension, or is rotated by 90 degrees.
+                if ((item.m_H == newItem.m_H && item.m_W == newItem.m_W) ||
+                    (item.m_H == newItem.m_W && item.m_W == newItem.m_H)) {
+                    // What does have the lower cost?
+                    if (newItem.m_Cost < item.m_Cost) {
+                        item.m_Cost = newItem.m_Cost;
                     }
+                } // It is a different product.
+                else {
+                    priceList->Add(newItem);
                 }
-                priceList->Add(item);
             }
         }
     }
+}
+
+bool CombinedPriceList::ContainsProducer(const AProducer &producer) {
+    return producers.find(producer) != producers.end();
+}
+
+// --------------------------------------------------------------------------------------
+
+class CombinedOrderList {
+public:
+    ACustomer customer;
+    AOrderList orderList;
+
+    CombinedOrderList(const ACustomer &customer, const AOrderList &orderList);
 };
+
+CombinedOrderList::CombinedOrderList(const ACustomer &customer, const AOrderList &orderList) : customer(customer),
+                                                                                               orderList(orderList) {}
+
+// --------------------------------------------------------------------------------------
 
 class CWeldingCompany {
 private:
     vector<thread> threads;
     set<AProducer> producers;
     set<ACustomer> customers;
-    map<unsigned int, CombinedPriceList> priceLists; // material: combined price list
+    unsigned activeCustomers = 0;
+    map<unsigned, CombinedPriceList> priceLists; // materialId: combined price list
+    vector<CombinedOrderList> buffer;
 
-    // TODO: buffery?
+    mutex bufferMutex;
+    mutex priceListsMutex;
+    mutex consoleMutex;
 
-    void Process();
+    condition_variable bufferEmptyCV;
+    condition_variable priceListReadyCV;
 
-    void ProcessCustomer();
+    void ProcessBuffer();
+
+    void ProcessCustomer(const ACustomer &customer);
 
 public:
     static void SeqSolve(APriceList priceList, COrder &order);
@@ -89,10 +130,6 @@ public:
 };
 
 void CWeldingCompany::SeqSolve(APriceList priceList, COrder &order) {
-#ifdef MY_DEBUG
-    cout << "SeqSolver" << endl;
-#endif
-
     vector<COrder> orderList;
     orderList.emplace_back(order);
     ProgtestSolver(orderList, priceList);
@@ -100,84 +137,173 @@ void CWeldingCompany::SeqSolve(APriceList priceList, COrder &order) {
 
 void CWeldingCompany::AddProducer(AProducer prod) {
 #ifdef MY_DEBUG
-    cout << "Add producer " << prod << endl;
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Add producer " << prod << "." << endl;
+    consoleGuard.unlock();
 #endif
 
-    // TODO: maybe some mutex?
     producers.insert(prod);
 }
 
 void CWeldingCompany::AddCustomer(ACustomer cust) {
 #ifdef MY_DEBUG
-    cout << "Add customer " << cust << endl;
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Add customer " << cust << "." << endl;
+    consoleGuard.unlock();
 #endif
 
-    // TODO: maybe some mutex?
     customers.insert(cust);
-    threads.emplace_back(&CWeldingCompany::ProcessCustomer, this);
 }
 
 void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
 #ifdef MY_DEBUG
-    cout << "Add priceList " << priceList << " from producer " << prod << endl;
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Add priceList " << priceList << " from producer " << prod << "." << endl;
+    consoleGuard.unlock();
 #endif
 
-    // TODO: maybe some mutex?
+    unique_lock<mutex> priceListGuard(priceListsMutex);
 
+    // If the price list exists.
     if (priceLists.find(priceList->m_MaterialID) != priceLists.end()) {
-        CombinedPriceList cpl;
+        priceLists.at(priceList->m_MaterialID).Add(prod, priceList);
+    } else {
+        CombinedPriceList cpl = CombinedPriceList(priceList->m_MaterialID);
         cpl.Add(prod, priceList);
         priceLists.insert(make_pair(priceList->m_MaterialID, cpl));
-    } else {
-        priceLists[priceList->m_MaterialID].Add(prod, priceList);
     }
 }
 
 void CWeldingCompany::Start(unsigned thrCount) {
 #ifdef MY_DEBUG
-    cout << "Starting with " << thrCount << " threads" << endl;
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Starting with " << thrCount << " threads." << endl;
+    consoleGuard.unlock();
 #endif
 
-    // Create threads.
-    for (unsigned int i = 0; i < thrCount; i++) {
-        threads.emplace_back(&CWeldingCompany::Process, this);
+    activeCustomers = customers.size();
+
+    // Create threads buffer processing.
+    for (unsigned i = 0; i < thrCount; i++) {
+        threads.emplace_back(&CWeldingCompany::ProcessBuffer, this);
+    }
+
+    // Create threads for customer processing.
+    for (auto &customer : customers) {
+        threads.emplace_back(&CWeldingCompany::ProcessCustomer, this, customer);
     }
 }
 
 void CWeldingCompany::Stop() {
 #ifdef MY_DEBUG
-    cout << "Stopping" << endl;
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Stopping." << endl;
+    consoleGuard.unlock();
 #endif
-    // TODO: počkat na obsloužení všech zákazníků a na naceněné a vrácené poptávky – to dát do Process
-    // TODO: notify všechny podmínky, aby se probraly
+    bufferEmptyCV.notify_all();
+    priceListReadyCV.notify_all();
 
-    // Wait for threads to finish.
+    // Wait for the threads to finish.
     for (auto &thread : threads) {
+#ifdef MY_DEBUG
+        consoleGuard.lock();
+        cout << "join." << endl;
+        consoleGuard.unlock();
+#endif
         thread.join();
     }
 
 #ifdef MY_DEBUG
-    cout << "Stopped" << endl;
+    consoleGuard.lock();
+    cout << "Stopped." << endl;
 #endif
 }
 
-void CWeldingCompany::Process() {
+void CWeldingCompany::ProcessBuffer() {
 #ifdef MY_DEBUG
-    cout << "Starting Process thread" << endl;
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Starting processing the buffer thread" << endl;
+    consoleGuard.unlock();
 #endif
 
-    // TODO
-}
+    while (true) {
+        unique_lock<mutex> bufferGuard(bufferMutex);
+        // If there are no data and no active customers, break.
+        if (buffer.empty() && activeCustomers == 0) {
+            break;
+        }
 
-void CWeldingCompany::ProcessCustomer() {
+        // Wait for the buffer data or customers to load the buffer data.
+        bufferEmptyCV.wait(bufferGuard, [this]() {
+            return !buffer.empty() || activeCustomers == 0;
+        });
+
+        // If there are no data and no active customers, break.
+        if (buffer.empty() && activeCustomers == 0) {
+            break;
+        }
+
 #ifdef MY_DEBUG
-    cout << "Starting ProcessCustomer thread" << endl;
+        consoleGuard.lock();
+        cout << "Get buffer item." << endl;
+        consoleGuard.unlock();
 #endif
 
-    // TODO
+        // Get the order list from buffer.
+        CombinedOrderList bufferItem = buffer.back();
+        buffer.pop_back();
+        bufferGuard.unlock();
+
+        unique_lock<mutex> priceListGuard(priceListsMutex);
+        // Does the priceList exist and is completed?
+        priceListReadyCV.wait(priceListGuard, [&]() {
+            return (priceLists.find(bufferItem.orderList->m_MaterialID) != priceLists.end()) &&
+                   (priceLists.at(bufferItem.orderList->m_MaterialID).producers.size() == producers.size());
+        });
+        // Compute the costs.
+        ProgtestSolver(bufferItem.orderList->m_List, priceLists.at(bufferItem.orderList->m_MaterialID).priceList);
+        priceListGuard.unlock();
+
+#ifdef MY_DEBUG
+        consoleGuard.lock();
+        cout << "Completed order list " << bufferItem.orderList << endl;
+        consoleGuard.unlock();
+#endif
+
+        // Flag this order list as completed.
+        bufferItem.customer->Completed(bufferItem.orderList);
+    }
 }
 
-// TODO: CWeldingCompany implementation goes here
+void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
+#ifdef MY_DEBUG
+    unique_lock<mutex> consoleGuard(consoleMutex);
+    cout << "Starting processing the customer thread " << customer << endl;
+    consoleGuard.unlock();
+#endif
+
+    AOrderList orderList;
+    // TODO: maybe orderList.get() != nullptr ?
+    while ((orderList = customer->WaitForDemand()) != nullptr) {
+        // Request price lists from producers.
+        for (auto &producer : producers) {
+            producer->SendPriceList(orderList->m_MaterialID);
+        }
+
+#ifdef MY_DEBUG
+        consoleGuard.lock();
+        cout << "Added orderList to the buffer " << orderList << endl;
+        consoleGuard.unlock();
+#endif
+
+        // Send this orderList to the buffer.
+        unique_lock<mutex> bufferGuard(bufferMutex);
+        buffer.emplace_back(customer, orderList);
+    }
+
+    // This customer is not active anymore.
+    activeCustomers--;
+}
 
 //-------------------------------------------------------------------------------------------------
 #ifndef __PROGTEST__
