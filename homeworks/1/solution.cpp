@@ -25,6 +25,7 @@
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
+#include <unistd.h>
 #include "progtest_solver.h"
 #include "sample_tester.h"
 
@@ -35,60 +36,77 @@ using namespace std;
 
 // Combined combinedPriceList by materialId from multiple producers.
 class CombinedPriceList {
-public:
+private:
+    vector<APriceList> priceLists;
     APriceList combinedPriceList;
+    bool combined = false;
     set<AProducer> producers;
-    unsigned materialId;
 
-    explicit CombinedPriceList(unsigned _materialId) : combinedPriceList(make_shared<CPriceList>(_materialId)),
-                                                       materialId(_materialId) {}
+    void CombinePriceLists();
 
-    void Add(const AProducer &producer, const APriceList &_priceList);
+public:
 
-    bool ContainsProducer(const AProducer &producer);
+    explicit CombinedPriceList(unsigned _materialId) : combinedPriceList(make_shared<CPriceList>(_materialId)) {}
+
+    void Add(AProducer producer, APriceList priceList);
+
+    bool ContainsProducer(AProducer producer);
+
+    APriceList GetCombinedPriceList();
+
+    unsigned GetProducersSize();
 };
 
-void CombinedPriceList::Add(const AProducer &producer, const APriceList &_priceList) {
-    // If producer have already added products to this combinedPriceList, return.
-    if (ContainsProducer(producer)) {
-        return;
-    }
-
-    producers.insert(producer);
-
-    long originalSize = combinedPriceList->m_List.size();
-
-    for (auto &newItem : _priceList->m_List) {
-        if (originalSize == 0) {
-            combinedPriceList->Add(newItem);
-            continue;
-        }
-
-        if (combinedPriceList->m_List.empty()) {
-            combinedPriceList->Add(newItem);
-        } else {
-            // If there is a duplicity in a product (by width and height).
-            for (int i = 0; i < originalSize; i++) {
-                CProd &prod = combinedPriceList->m_List[i];
-
+void CombinedPriceList::CombinePriceLists() {
+    for (auto &priceList : priceLists) {
+        for (auto &newProduct: priceList->m_List) {
+            bool duplicity = false;
+            for (auto &product: combinedPriceList->m_List) {
                 // The product has the same dimension, or is rotated by 90 degrees.
-                if ((prod.m_H == newItem.m_H && prod.m_W == newItem.m_W) ||
-                    (prod.m_H == newItem.m_W && prod.m_W == newItem.m_H)) {
+                if ((product.m_H == newProduct.m_H && product.m_W == newProduct.m_W) ||
+                    (product.m_H == newProduct.m_W && product.m_W == newProduct.m_H)) {
+                    duplicity = true;
+
                     // What does have the lower cost?
-                    if (newItem.m_Cost < prod.m_Cost) {
-                        prod.m_Cost = newItem.m_Cost;
+                    if (newProduct.m_Cost < product.m_Cost) {
+                        product.m_Cost = newProduct.m_Cost;
                     }
-                } // It is a different product.
-                else {
-                    combinedPriceList->Add(newItem);
                 }
+            }
+
+            if (!duplicity) {
+                combinedPriceList->Add(newProduct);
             }
         }
     }
 }
 
-bool CombinedPriceList::ContainsProducer(const AProducer &producer) {
+void CombinedPriceList::Add(AProducer producer, APriceList priceList) {
+    // If producer have already added products to this combinedPriceList, return.
+    if (ContainsProducer(producer)) {
+        return;
+    }
+
+    // Check the producer and add the price list.
+    producers.insert(producer);
+    priceLists.emplace_back(priceList);
+}
+
+bool CombinedPriceList::ContainsProducer(AProducer producer) {
     return producers.find(producer) != producers.end();
+}
+
+APriceList CombinedPriceList::GetCombinedPriceList() {
+    if (!combined) {
+        combined = true;
+        CombinePriceLists();
+    }
+
+    return combinedPriceList;
+}
+
+unsigned CombinedPriceList::GetProducersSize() {
+    return producers.size();
 }
 
 // --------------------------------------------------------------------------------------
@@ -99,11 +117,11 @@ public:
     ACustomer customer;
     AOrderList orderList;
 
-    CombinedOrderList(const ACustomer &customer, const AOrderList &orderList);
+    CombinedOrderList(ACustomer customer, AOrderList orderList);
 };
 
-CombinedOrderList::CombinedOrderList(const ACustomer &customer, const AOrderList &orderList) : customer(customer),
-                                                                                               orderList(orderList) {}
+CombinedOrderList::CombinedOrderList(ACustomer customer, AOrderList orderList) : customer(customer),
+                                                                                 orderList(orderList) {}
 
 // --------------------------------------------------------------------------------------
 
@@ -113,7 +131,7 @@ private:
     vector<thread> customerThreads;
     set<AProducer> producers;
     set<ACustomer> customers;
-    unsigned activeCustomers = 0;
+    atomic<unsigned> activeCustomers;
     map<unsigned, CombinedPriceList> priceLists; // materialId: combined price list
     queue<CombinedOrderList> buffer;
 
@@ -125,7 +143,7 @@ private:
 
     void ProcessBuffer();
 
-    void ProcessCustomer(const ACustomer &customer);
+    void ProcessCustomer(ACustomer customer);
 
 public:
     static void SeqSolve(APriceList priceList, COrder &order);
@@ -157,7 +175,6 @@ void CWeldingCompany::AddCustomer(ACustomer cust) {
 }
 
 void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
-    // TODO: speed up
     unique_lock<mutex> priceListGuard(priceListsMutex);
 
     // If the price list exists.
@@ -168,6 +185,7 @@ void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
         cpl.Add(prod, priceList);
         priceLists.insert(make_pair(priceList->m_MaterialID, cpl));
     }
+    priceListGuard.unlock();
 
     // Wake up the threads waiting for the price list data.
     priceListReadyCV.notify_all();
@@ -223,9 +241,10 @@ void CWeldingCompany::ProcessBuffer() {
         // Does the combinedPriceList exist and is completed?
         priceListReadyCV.wait(priceListGuard, [&]() {
             return (priceLists.find(bufferItem.orderList->m_MaterialID) != priceLists.end()) &&
-                   (priceLists.at(bufferItem.orderList->m_MaterialID).producers.size() == producers.size());
+                   (priceLists.at(bufferItem.orderList->m_MaterialID).GetProducersSize() == producers.size());
         });
-        APriceList priceList = priceLists.at(bufferItem.orderList->m_MaterialID).combinedPriceList;
+        usleep(rand() % 100);
+        APriceList priceList = priceLists.at(bufferItem.orderList->m_MaterialID).GetCombinedPriceList();
         priceListGuard.unlock();
 
         // Compute the costs.
@@ -236,8 +255,11 @@ void CWeldingCompany::ProcessBuffer() {
     }
 }
 
-void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
+void CWeldingCompany::ProcessCustomer(ACustomer customer) {
     AOrderList orderList;
+
+    usleep(rand() % 100);
+
     while ((orderList = customer->WaitForDemand()) != nullptr) {
         // Request price lists from producers.
         for (auto &producer : producers) {
@@ -261,6 +283,8 @@ void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
 #ifndef __PROGTEST__
 
 int main() {
+    srand(time(NULL));
+
     using namespace std::placeholders;
 
     CWeldingCompany test;
@@ -271,22 +295,55 @@ int main() {
     test.AddProducer(p2);
     test.AddCustomer(make_shared<CCustomerTest>(1));
     test.AddCustomer(make_shared<CCustomerTest>(2));
-    test.AddCustomer(make_shared<CCustomerTest>(1));
-    test.AddCustomer(make_shared<CCustomerTest>(2));
-    test.AddCustomer(make_shared<CCustomerTest>(1));
-    test.AddCustomer(make_shared<CCustomerTest>(2));
-    test.AddCustomer(make_shared<CCustomerTest>(1));
-    test.AddCustomer(make_shared<CCustomerTest>(2));
-    test.AddCustomer(make_shared<CCustomerTest>(1));
-    test.AddCustomer(make_shared<CCustomerTest>(2));
-    test.AddCustomer(make_shared<CCustomerTest>(1));
-    test.AddCustomer(make_shared<CCustomerTest>(2));
     p2->Start();
     test.Start(10);
     test.Stop();
     p2->Stop();
 
     return 0;
+
+//    using namespace placeholders;
+//    CWeldingCompany test;
+//
+//    AProducer p1 = make_shared<CProducerSync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    AProducerAsync p2 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    AProducerAsync p3 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    AProducerAsync p4 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    AProducerAsync p5 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    AProducerAsync p6 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    AProducerAsync p7 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
+//    test.AddProducer(p1);
+//    test.AddProducer(p2);
+//    test.AddProducer(p3);
+//    test.AddProducer(p4);
+//    test.AddProducer(p5);
+//    test.AddProducer(p6);
+//    test.AddProducer(p7);
+//    //test . AddCustomer ( make_shared<CCustomerTest> ( 9850 ) );
+//    //test . AddCustomer ( make_shared<CCustomerTest> ( 8660 ) );
+//    //test . AddCustomer ( make_shared<CCustomerTest> ( 6610 ) );
+//    //test . AddCustomer ( make_shared<CCustomerTest> ( 8530 ) );
+//
+//    test.AddCustomer(make_shared<CCustomerTest>(39400));
+//    test.AddCustomer(make_shared<CCustomerTest>(34640));
+////    test.AddCustomer(make_shared<CCustomerTest>(26440));
+////    test.AddCustomer(make_shared<CCustomerTest>(34120));
+//    p2->Start();
+//    p3->Start();
+//    p4->Start();
+//    p5->Start();
+//    p6->Start();
+//    p7->Start();
+//    test.Start(10);
+//    test.Stop();
+//    p2->Stop();
+//    p3->Stop();
+//    p4->Stop();
+//    p5->Stop();
+//    p6->Stop();
+//    p7->Stop();
+//
+//    return 0;
 }
 
 #endif /* __PROGTEST__ */

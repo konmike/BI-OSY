@@ -113,6 +113,7 @@ void CCustomerTest::Completed(AOrderList x) {
             break;
         }
     printf("CCustomerTest::Completed, status = %s\n", mismatch ? "fail" : "OK");
+//    if(mismatch) printf ( "CCustomerTest::Completed, status = %s\n", mismatch ? "fail" : "OK" );
 }
 
 //-------------------------------------------------------------------------------------------------
