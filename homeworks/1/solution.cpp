@@ -106,10 +106,11 @@ private:
 
     mutex bufferMutex;
     mutex priceListsMutex;
-    mutex consoleMutex;
+    mutex consoleMutex; // for debug purpose
 
     condition_variable bufferEmptyCV;
     condition_variable priceListReadyCV;
+    // TODO: maybe add condition_variable customersCV;
 
     void ProcessBuffer();
 
@@ -172,16 +173,20 @@ void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
         cpl.Add(prod, priceList);
         priceLists.insert(make_pair(priceList->m_MaterialID, cpl));
     }
+
+    // Wake up the threads waiting for the price list data.
+    // TODO: is this ok?
+    priceListReadyCV.notify_all();
 }
 
 void CWeldingCompany::Start(unsigned thrCount) {
+    activeCustomers = customers.size();
+
 #ifdef MY_DEBUG
     unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Starting with " << thrCount << " threads." << endl;
+    cout << "Starting with " << thrCount << " threads and " << activeCustomers << " customers." << endl;
     consoleGuard.unlock();
 #endif
-
-    activeCustomers = customers.size();
 
     // Create threads buffer processing.
     for (unsigned i = 0; i < thrCount; i++) {
@@ -207,7 +212,7 @@ void CWeldingCompany::Stop() {
     for (auto &thread : threads) {
 #ifdef MY_DEBUG
         consoleGuard.lock();
-        cout << "join." << endl;
+        cout << "Thread is joinable " << thread.joinable() << "." << endl;
         consoleGuard.unlock();
 #endif
         thread.join();
@@ -251,6 +256,7 @@ void CWeldingCompany::ProcessBuffer() {
 
         // Get the order list from buffer.
         CombinedOrderList bufferItem = buffer.back();
+        // TODO: maybe something like break if bufferItem == buffer.end() ?
         buffer.pop_back();
         bufferGuard.unlock();
 
@@ -299,6 +305,9 @@ void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
         // Send this orderList to the buffer.
         unique_lock<mutex> bufferGuard(bufferMutex);
         buffer.emplace_back(customer, orderList);
+        // Wake up the threads waiting for the buffer data.
+        // TODO: is this ok?
+        bufferEmptyCV.notify_all();
     }
 
     // This customer is not active anymore.
