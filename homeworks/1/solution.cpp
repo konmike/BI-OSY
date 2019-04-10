@@ -33,14 +33,14 @@ using namespace std;
 
 // --------------------------------------------------------------------------------------
 
-// Combined priceList by materialId from multiple producers.
+// Combined combinedPriceList by materialId from multiple producers.
 class CombinedPriceList {
 public:
-    APriceList priceList;
+    APriceList combinedPriceList;
     set<AProducer> producers;
     unsigned materialId;
 
-    explicit CombinedPriceList(unsigned _materialId) : priceList(make_shared<CPriceList>(_materialId)),
+    explicit CombinedPriceList(unsigned _materialId) : combinedPriceList(make_shared<CPriceList>(_materialId)),
                                                        materialId(_materialId) {}
 
     void Add(const AProducer &producer, const APriceList &_priceList);
@@ -49,27 +49,38 @@ public:
 };
 
 void CombinedPriceList::Add(const AProducer &producer, const APriceList &_priceList) {
-#ifdef MY_DEBUG
-    cout << "Add " << _priceList << " to priced list " << this << "." << endl;
-#endif
+    // If producer have already added products to this combinedPriceList, return.
+    if (ContainsProducer(producer)) {
+        return;
+    }
 
-    // If producer haven't already added products to this priceList.
-    if (!ContainsProducer(producer)) {
-        producers.insert(producer);
+    producers.insert(producer);
 
-        for (auto &newItem : _priceList->m_List) {
+    long originalSize = combinedPriceList->m_List.size();
+
+    for (auto &newItem : _priceList->m_List) {
+        if (originalSize == 0) {
+            combinedPriceList->Add(newItem);
+            continue;
+        }
+
+        if (combinedPriceList->m_List.empty()) {
+            combinedPriceList->Add(newItem);
+        } else {
             // If there is a duplicity in a product (by width and height).
-            for (auto &item : priceList->m_List) {
+            for (int i = 0; i < originalSize; i++) {
+                CProd &prod = combinedPriceList->m_List[i];
+
                 // The product has the same dimension, or is rotated by 90 degrees.
-                if ((item.m_H == newItem.m_H && item.m_W == newItem.m_W) ||
-                    (item.m_H == newItem.m_W && item.m_W == newItem.m_H)) {
+                if ((prod.m_H == newItem.m_H && prod.m_W == newItem.m_W) ||
+                    (prod.m_H == newItem.m_W && prod.m_W == newItem.m_H)) {
                     // What does have the lower cost?
-                    if (newItem.m_Cost < item.m_Cost) {
-                        item.m_Cost = newItem.m_Cost;
+                    if (newItem.m_Cost < prod.m_Cost) {
+                        prod.m_Cost = newItem.m_Cost;
                     }
                 } // It is a different product.
                 else {
-                    priceList->Add(newItem);
+                    combinedPriceList->Add(newItem);
                 }
             }
         }
@@ -98,11 +109,12 @@ CombinedOrderList::CombinedOrderList(const ACustomer &customer, const AOrderList
 class CWeldingCompany {
 private:
     vector<thread> threads;
+    vector<thread> customerThreads;
     set<AProducer> producers;
     set<ACustomer> customers;
     unsigned activeCustomers = 0;
     map<unsigned, CombinedPriceList> priceLists; // materialId: combined price list
-    vector<CombinedOrderList> buffer;
+    queue<CombinedOrderList> buffer;
 
     mutex bufferMutex;
     mutex priceListsMutex;
@@ -110,7 +122,6 @@ private:
 
     condition_variable bufferEmptyCV;
     condition_variable priceListReadyCV;
-    // TODO: maybe add condition_variable customersCV;
 
     void ProcessBuffer();
 
@@ -134,6 +145,7 @@ void CWeldingCompany::SeqSolve(APriceList priceList, COrder &order) {
     vector<COrder> orderList;
     orderList.emplace_back(order);
     ProgtestSolver(orderList, priceList);
+    order = orderList.back();
 }
 
 void CWeldingCompany::AddProducer(AProducer prod) {
@@ -159,7 +171,7 @@ void CWeldingCompany::AddCustomer(ACustomer cust) {
 void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
 #ifdef MY_DEBUG
     unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Add priceList " << priceList << " from producer " << prod << "." << endl;
+    cout << "Add combinedPriceList " << priceList << " from producer " << prod << "." << endl;
     consoleGuard.unlock();
 #endif
 
@@ -175,7 +187,6 @@ void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
     }
 
     // Wake up the threads waiting for the price list data.
-    // TODO: is this ok?
     priceListReadyCV.notify_all();
 }
 
@@ -195,7 +206,7 @@ void CWeldingCompany::Start(unsigned thrCount) {
 
     // Create threads for customer processing.
     for (auto &customer : customers) {
-        threads.emplace_back(&CWeldingCompany::ProcessCustomer, this, customer);
+        customerThreads.emplace_back(&CWeldingCompany::ProcessCustomer, this, customer);
     }
 }
 
@@ -205,16 +216,16 @@ void CWeldingCompany::Stop() {
     cout << "Stopping." << endl;
     consoleGuard.unlock();
 #endif
+
+    // Wait for the customer threads to finish.
+    for (auto &thread : customerThreads) {
+        thread.join();
+    }
+
     bufferEmptyCV.notify_all();
-    priceListReadyCV.notify_all();
 
     // Wait for the threads to finish.
     for (auto &thread : threads) {
-#ifdef MY_DEBUG
-        consoleGuard.lock();
-        cout << "Thread is joinable " << thread.joinable() << "." << endl;
-        consoleGuard.unlock();
-#endif
         thread.join();
     }
 
@@ -233,11 +244,6 @@ void CWeldingCompany::ProcessBuffer() {
 
     while (true) {
         unique_lock<mutex> bufferGuard(bufferMutex);
-        // If there are no data and no active customers, break.
-        if (buffer.empty() && activeCustomers == 0) {
-            break;
-        }
-
         // Wait for the buffer data or customers to load the buffer data.
         bufferEmptyCV.wait(bufferGuard, [this]() {
             return !buffer.empty() || activeCustomers == 0;
@@ -255,26 +261,29 @@ void CWeldingCompany::ProcessBuffer() {
 #endif
 
         // Get the order list from buffer.
-        CombinedOrderList bufferItem = buffer.back();
-        // TODO: maybe something like break if bufferItem == buffer.end() ?
-        buffer.pop_back();
+        CombinedOrderList bufferItem = buffer.front();
+        buffer.pop();
         bufferGuard.unlock();
 
         unique_lock<mutex> priceListGuard(priceListsMutex);
-        // Does the priceList exist and is completed?
+        // Does the combinedPriceList exist and is completed?
         priceListReadyCV.wait(priceListGuard, [&]() {
             return (priceLists.find(bufferItem.orderList->m_MaterialID) != priceLists.end()) &&
                    (priceLists.at(bufferItem.orderList->m_MaterialID).producers.size() == producers.size());
         });
-        // Compute the costs.
-        ProgtestSolver(bufferItem.orderList->m_List, priceLists.at(bufferItem.orderList->m_MaterialID).priceList);
+        APriceList priceList = priceLists.at(bufferItem.orderList->m_MaterialID).combinedPriceList;
         priceListGuard.unlock();
 
 #ifdef MY_DEBUG
         consoleGuard.lock();
         cout << "Completed order list " << bufferItem.orderList << endl;
+        cout << "položek: " << priceList->m_List.size() << endl;
+
         consoleGuard.unlock();
 #endif
+
+        // Compute the costs.
+        ProgtestSolver(bufferItem.orderList->m_List, priceList);
 
         // Flag this order list as completed.
         bufferItem.customer->Completed(bufferItem.orderList);
@@ -289,7 +298,6 @@ void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
 #endif
 
     AOrderList orderList;
-    // TODO: maybe orderList.get() != nullptr ?
     while ((orderList = customer->WaitForDemand()) != nullptr) {
         // Request price lists from producers.
         for (auto &producer : producers) {
@@ -304,10 +312,11 @@ void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
 
         // Send this orderList to the buffer.
         unique_lock<mutex> bufferGuard(bufferMutex);
-        buffer.emplace_back(customer, orderList);
+        buffer.emplace(customer, orderList);
+        bufferGuard.unlock();
+
         // Wake up the threads waiting for the buffer data.
-        // TODO: is this ok?
-        bufferEmptyCV.notify_all();
+        bufferEmptyCV.notify_one();
     }
 
     // This customer is not active anymore.
@@ -319,17 +328,30 @@ void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
 
 int main() {
     using namespace std::placeholders;
+
     CWeldingCompany test;
 
     AProducer p1 = make_shared<CProducerSync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
     AProducerAsync p2 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
     test.AddProducer(p1);
     test.AddProducer(p2);
+    test.AddCustomer(make_shared<CCustomerTest>(1));
+    test.AddCustomer(make_shared<CCustomerTest>(2));
+    test.AddCustomer(make_shared<CCustomerTest>(1));
+    test.AddCustomer(make_shared<CCustomerTest>(2));
+    test.AddCustomer(make_shared<CCustomerTest>(1));
+    test.AddCustomer(make_shared<CCustomerTest>(2));
+    test.AddCustomer(make_shared<CCustomerTest>(1));
+    test.AddCustomer(make_shared<CCustomerTest>(2));
+    test.AddCustomer(make_shared<CCustomerTest>(1));
+    test.AddCustomer(make_shared<CCustomerTest>(2));
+    test.AddCustomer(make_shared<CCustomerTest>(1));
     test.AddCustomer(make_shared<CCustomerTest>(2));
     p2->Start();
-    test.Start(3);
+    test.Start(10);
     test.Stop();
     p2->Stop();
+
     return 0;
 }
 
