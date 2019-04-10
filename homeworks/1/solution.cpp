@@ -243,7 +243,6 @@ void CWeldingCompany::ProcessBuffer() {
             return (priceLists.find(bufferItem.orderList->m_MaterialID) != priceLists.end()) &&
                    (priceLists.at(bufferItem.orderList->m_MaterialID).GetProducersSize() == producers.size());
         });
-        usleep(rand() % 100);
         APriceList priceList = priceLists.at(bufferItem.orderList->m_MaterialID).GetCombinedPriceList();
         priceListGuard.unlock();
 
@@ -257,8 +256,6 @@ void CWeldingCompany::ProcessBuffer() {
 
 void CWeldingCompany::ProcessCustomer(ACustomer customer) {
     AOrderList orderList;
-
-    usleep(rand() % 100);
 
     while ((orderList = customer->WaitForDemand()) != nullptr) {
         // Request price lists from producers.
@@ -283,8 +280,6 @@ void CWeldingCompany::ProcessCustomer(ACustomer customer) {
 #ifndef __PROGTEST__
 
 int main() {
-    srand(time(NULL));
-
     using namespace std::placeholders;
 
     CWeldingCompany test;
@@ -302,48 +297,6 @@ int main() {
 
     return 0;
 
-//    using namespace placeholders;
-//    CWeldingCompany test;
-//
-//    AProducer p1 = make_shared<CProducerSync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    AProducerAsync p2 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    AProducerAsync p3 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    AProducerAsync p4 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    AProducerAsync p5 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    AProducerAsync p6 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    AProducerAsync p7 = make_shared<CProducerAsync>(bind(&CWeldingCompany::AddPriceList, &test, _1, _2));
-//    test.AddProducer(p1);
-//    test.AddProducer(p2);
-//    test.AddProducer(p3);
-//    test.AddProducer(p4);
-//    test.AddProducer(p5);
-//    test.AddProducer(p6);
-//    test.AddProducer(p7);
-//    //test . AddCustomer ( make_shared<CCustomerTest> ( 9850 ) );
-//    //test . AddCustomer ( make_shared<CCustomerTest> ( 8660 ) );
-//    //test . AddCustomer ( make_shared<CCustomerTest> ( 6610 ) );
-//    //test . AddCustomer ( make_shared<CCustomerTest> ( 8530 ) );
-//
-//    test.AddCustomer(make_shared<CCustomerTest>(39400));
-//    test.AddCustomer(make_shared<CCustomerTest>(34640));
-////    test.AddCustomer(make_shared<CCustomerTest>(26440));
-////    test.AddCustomer(make_shared<CCustomerTest>(34120));
-//    p2->Start();
-//    p3->Start();
-//    p4->Start();
-//    p5->Start();
-//    p6->Start();
-//    p7->Start();
-//    test.Start(10);
-//    test.Stop();
-//    p2->Stop();
-//    p3->Stop();
-//    p4->Stop();
-//    p5->Stop();
-//    p6->Stop();
-//    p7->Stop();
-//
-//    return 0;
 }
 
 #endif /* __PROGTEST__ */
