@@ -93,6 +93,7 @@ bool CombinedPriceList::ContainsProducer(const AProducer &producer) {
 
 // --------------------------------------------------------------------------------------
 
+// Pair with the customer and the order list.
 class CombinedOrderList {
 public:
     ACustomer customer;
@@ -118,7 +119,6 @@ private:
 
     mutex bufferMutex;
     mutex priceListsMutex;
-    mutex consoleMutex; // for debug purpose
 
     condition_variable bufferEmptyCV;
     condition_variable priceListReadyCV;
@@ -149,32 +149,15 @@ void CWeldingCompany::SeqSolve(APriceList priceList, COrder &order) {
 }
 
 void CWeldingCompany::AddProducer(AProducer prod) {
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Add producer " << prod << "." << endl;
-    consoleGuard.unlock();
-#endif
-
     producers.insert(prod);
 }
 
 void CWeldingCompany::AddCustomer(ACustomer cust) {
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Add customer " << cust << "." << endl;
-    consoleGuard.unlock();
-#endif
-
     customers.insert(cust);
 }
 
 void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Add combinedPriceList " << priceList << " from producer " << prod << "." << endl;
-    consoleGuard.unlock();
-#endif
-
+    // TODO: speed up
     unique_lock<mutex> priceListGuard(priceListsMutex);
 
     // If the price list exists.
@@ -193,12 +176,6 @@ void CWeldingCompany::AddPriceList(AProducer prod, APriceList priceList) {
 void CWeldingCompany::Start(unsigned thrCount) {
     activeCustomers = customers.size();
 
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Starting with " << thrCount << " threads and " << activeCustomers << " customers." << endl;
-    consoleGuard.unlock();
-#endif
-
     // Create threads buffer processing.
     for (unsigned i = 0; i < thrCount; i++) {
         threads.emplace_back(&CWeldingCompany::ProcessBuffer, this);
@@ -211,12 +188,6 @@ void CWeldingCompany::Start(unsigned thrCount) {
 }
 
 void CWeldingCompany::Stop() {
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Stopping." << endl;
-    consoleGuard.unlock();
-#endif
-
     // Wait for the customer threads to finish.
     for (auto &thread : customerThreads) {
         thread.join();
@@ -228,20 +199,9 @@ void CWeldingCompany::Stop() {
     for (auto &thread : threads) {
         thread.join();
     }
-
-#ifdef MY_DEBUG
-    consoleGuard.lock();
-    cout << "Stopped." << endl;
-#endif
 }
 
 void CWeldingCompany::ProcessBuffer() {
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Starting processing the buffer thread" << endl;
-    consoleGuard.unlock();
-#endif
-
     while (true) {
         unique_lock<mutex> bufferGuard(bufferMutex);
         // Wait for the buffer data or customers to load the buffer data.
@@ -253,12 +213,6 @@ void CWeldingCompany::ProcessBuffer() {
         if (buffer.empty() && activeCustomers == 0) {
             break;
         }
-
-#ifdef MY_DEBUG
-        consoleGuard.lock();
-        cout << "Get buffer item." << endl;
-        consoleGuard.unlock();
-#endif
 
         // Get the order list from buffer.
         CombinedOrderList bufferItem = buffer.front();
@@ -274,14 +228,6 @@ void CWeldingCompany::ProcessBuffer() {
         APriceList priceList = priceLists.at(bufferItem.orderList->m_MaterialID).combinedPriceList;
         priceListGuard.unlock();
 
-#ifdef MY_DEBUG
-        consoleGuard.lock();
-        cout << "Completed order list " << bufferItem.orderList << endl;
-        cout << "položek: " << priceList->m_List.size() << endl;
-
-        consoleGuard.unlock();
-#endif
-
         // Compute the costs.
         ProgtestSolver(bufferItem.orderList->m_List, priceList);
 
@@ -291,24 +237,12 @@ void CWeldingCompany::ProcessBuffer() {
 }
 
 void CWeldingCompany::ProcessCustomer(const ACustomer &customer) {
-#ifdef MY_DEBUG
-    unique_lock<mutex> consoleGuard(consoleMutex);
-    cout << "Starting processing the customer thread " << customer << endl;
-    consoleGuard.unlock();
-#endif
-
     AOrderList orderList;
     while ((orderList = customer->WaitForDemand()) != nullptr) {
         // Request price lists from producers.
         for (auto &producer : producers) {
             producer->SendPriceList(orderList->m_MaterialID);
         }
-
-#ifdef MY_DEBUG
-        consoleGuard.lock();
-        cout << "Added orderList to the buffer " << orderList << endl;
-        consoleGuard.unlock();
-#endif
 
         // Send this orderList to the buffer.
         unique_lock<mutex> bufferGuard(bufferMutex);
